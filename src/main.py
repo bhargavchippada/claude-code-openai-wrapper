@@ -51,10 +51,31 @@ from src.rate_limiter import (
     rate_limit_exceeded_handler,
     rate_limit_endpoint,
 )
-from src.constants import CLAUDE_MODELS, CLAUDE_TOOLS, DEFAULT_ALLOWED_TOOLS
+from src.constants import (
+    CLAUDE_MODELS,
+    CLAUDE_TOOLS,
+    DEFAULT_ALLOWED_TOOLS,
+    FULL_TOOLS_MAX_TURNS,
+    FULL_TOOLS_PERMISSION_MODE,
+)
 
 # Load environment variables
 load_dotenv()
+
+# Full tools mode — enables all Claude Code tools, MCP servers, skills, CLAUDE.md
+CLAUDE_FULL_TOOLS = os.getenv("CLAUDE_FULL_TOOLS", "false").lower() in ("true", "1", "yes", "on")
+
+# Setting sources — controls what Claude Code loads (user settings, project CLAUDE.md/.mcp.json)
+CLAUDE_SETTING_SOURCES = [
+    s.strip()
+    for s in os.getenv("CLAUDE_SETTING_SOURCES", "").split(",")
+    if s.strip() in ("user", "project", "local")
+] or None
+
+# Additional directories for Claude Code context
+CLAUDE_ADD_DIRS = [
+    d.strip() for d in os.getenv("CLAUDE_ADD_DIRS", "").split(",") if d.strip()
+] or None
 
 # Configure logging based on debug mode
 DEBUG_MODE = os.getenv("DEBUG_MODE", "false").lower() in ("true", "1", "yes", "on")
@@ -64,6 +85,14 @@ VERBOSE = os.getenv("VERBOSE", "false").lower() in ("true", "1", "yes", "on")
 log_level = logging.DEBUG if (DEBUG_MODE or VERBOSE) else logging.INFO
 logging.basicConfig(level=log_level, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
+
+# Log full-tools configuration at module load
+logger.info(
+    "Full-tools config: CLAUDE_FULL_TOOLS=%s, SETTING_SOURCES=%s, ADD_DIRS=%s",
+    CLAUDE_FULL_TOOLS,
+    CLAUDE_SETTING_SOURCES,
+    CLAUDE_ADD_DIRS,
+)
 
 # Global variable to store runtime-generated API key
 runtime_api_key = None
@@ -426,8 +455,19 @@ async def generate_streaming_response(
         if claude_options.get("model"):
             ParameterValidator.validate_model(claude_options["model"])
 
-        # Handle tools - disabled by default for OpenAI compatibility
-        if not request.enable_tools:
+        # Handle tools configuration
+        # When CLAUDE_FULL_TOOLS=true, enable all tools unless client explicitly sends enable_tools=false
+        # Note: enable_tools defaults to False in the model, so we check CLAUDE_FULL_TOOLS first
+        if CLAUDE_FULL_TOOLS:
+            # Full tools mode: all native tools, high max_turns, bypass permissions
+            claude_options["permission_mode"] = FULL_TOOLS_PERMISSION_MODE
+            claude_options.setdefault("max_turns", FULL_TOOLS_MAX_TURNS)
+            # Don't set allowed_tools or disallowed_tools — let Claude Code use everything
+            logger.info(
+                "Full tools mode enabled (CLAUDE_FULL_TOOLS=true) with max_turns=%s",
+                FULL_TOOLS_MAX_TURNS,
+            )
+        elif not request.enable_tools:
             # Disable all tools by using CLAUDE_TOOLS constant
             claude_options["disallowed_tools"] = CLAUDE_TOOLS
             claude_options["max_turns"] = 1  # Single turn for Q&A
@@ -452,6 +492,8 @@ async def generate_streaming_response(
             allowed_tools=claude_options.get("allowed_tools"),
             disallowed_tools=claude_options.get("disallowed_tools"),
             permission_mode=claude_options.get("permission_mode"),
+            setting_sources=CLAUDE_SETTING_SOURCES,
+            add_dirs=CLAUDE_ADD_DIRS,
             stream=True,
         ):
             chunks_buffer.append(chunk)
@@ -688,8 +730,16 @@ async def chat_completions(
             if claude_options.get("model"):
                 ParameterValidator.validate_model(claude_options["model"])
 
-            # Handle tools - disabled by default for OpenAI compatibility
-            if not request_body.enable_tools:
+            # Handle tools configuration
+            if CLAUDE_FULL_TOOLS:
+                # Full tools mode: all native tools, high max_turns, bypass permissions
+                claude_options["permission_mode"] = FULL_TOOLS_PERMISSION_MODE
+                claude_options.setdefault("max_turns", FULL_TOOLS_MAX_TURNS)
+                logger.info(
+                    "Full tools mode enabled (CLAUDE_FULL_TOOLS=true) with max_turns=%s",
+                    FULL_TOOLS_MAX_TURNS,
+                )
+            elif not request_body.enable_tools:
                 # Disable all tools by using CLAUDE_TOOLS constant
                 claude_options["disallowed_tools"] = CLAUDE_TOOLS
                 claude_options["max_turns"] = 1  # Single turn for Q&A
@@ -711,6 +761,8 @@ async def chat_completions(
                 allowed_tools=claude_options.get("allowed_tools"),
                 disallowed_tools=claude_options.get("disallowed_tools"),
                 permission_mode=claude_options.get("permission_mode"),
+                setting_sources=CLAUDE_SETTING_SOURCES,
+                add_dirs=CLAUDE_ADD_DIRS,
                 stream=False,
             ):
                 chunks.append(chunk)
@@ -812,13 +864,17 @@ async def anthropic_messages(
         # Run Claude Code - tools enabled by default for Anthropic SDK clients
         # (they're typically using this for agentic workflows)
         chunks = []
+        anthropic_max_turns = FULL_TOOLS_MAX_TURNS if CLAUDE_FULL_TOOLS else 10
+        anthropic_allowed = None if CLAUDE_FULL_TOOLS else DEFAULT_ALLOWED_TOOLS
         async for chunk in claude_cli.run_completion(
             prompt=prompt,
             system_prompt=system_prompt,
             model=request_body.model,
-            max_turns=10,
-            allowed_tools=DEFAULT_ALLOWED_TOOLS,
+            max_turns=anthropic_max_turns,
+            allowed_tools=anthropic_allowed,
             permission_mode="bypassPermissions",
+            setting_sources=CLAUDE_SETTING_SOURCES,
+            add_dirs=CLAUDE_ADD_DIRS,
             stream=False,
         ):
             chunks.append(chunk)

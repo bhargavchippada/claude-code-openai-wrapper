@@ -65,6 +65,10 @@ DEFAULT_DISALLOWED_TOOLS = [
     "WebSearch",  # External network access
 ]
 
+# Full tools defaults
+FULL_TOOLS_MAX_TURNS = int(os.getenv("CLAUDE_MAX_TURNS", "50"))
+FULL_TOOLS_PERMISSION_MODE = "bypassPermissions"
+
 # Claude Models
 # Models supported by Claude Agent SDK (as of November 2025)
 # NOTE: Claude Agent SDK only supports Claude 4+ models, not Claude 3.x

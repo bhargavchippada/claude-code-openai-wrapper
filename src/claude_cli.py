@@ -104,20 +104,31 @@ class ClaudeCodeCLI:
         session_id: Optional[str] = None,
         continue_session: bool = False,
         permission_mode: Optional[str] = None,
+        setting_sources: Optional[List[str]] = None,
+        add_dirs: Optional[List[str]] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Run Claude Agent using the Python SDK and yield response chunks."""
 
         try:
-            # Set authentication environment variables (if any)
+            # Strip CLAUDECODE env var to prevent "nested session" error
+            # when the wrapper is started from inside a Claude Code session
             original_env = {}
+            claudecode_val = os.environ.pop("CLAUDECODE", None)
+            if claudecode_val is not None:
+                original_env["CLAUDECODE"] = claudecode_val
+
+            # Set authentication environment variables (if any)
             if self.claude_env_vars:  # Only set env vars if we have any
                 for key, value in self.claude_env_vars.items():
                     original_env[key] = os.environ.get(key)
                     os.environ[key] = value
 
             try:
-                # Build SDK options
+                # Build SDK options — use system CLI if CLAUDE_CLI_PATH is set
+                cli_path = os.getenv("CLAUDE_CLI_PATH")
                 options = ClaudeAgentOptions(max_turns=max_turns, cwd=self.cwd)
+                if cli_path:
+                    options.cli_path = cli_path
 
                 # Set model if specified
                 if model:
@@ -140,6 +151,14 @@ class ClaudeCodeCLI:
                 # Set permission mode (needed for tool execution in API context)
                 if permission_mode:
                     options.permission_mode = permission_mode
+
+                # Set setting sources (user, project, local) — loads CLAUDE.md, .mcp.json, skills
+                if setting_sources:
+                    options.setting_sources = setting_sources
+
+                # Set additional directories for project context
+                if add_dirs:
+                    options.add_dirs = [Path(d) for d in add_dirs]
 
                 # Handle session continuity
                 if continue_session:
